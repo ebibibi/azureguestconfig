@@ -6,46 +6,91 @@ https://cloudbrothers.info/azure-persistence-azure-policy-guest-configuration/
 #PowerShell 7で実行
 
 
-Install-Module -Name 'GuestConfiguration','PSDesiredStateConfiguration','PSDscResources'
+Install-Module -Name 'GuestConfiguration','PSDscResources'
+Install-Module -Name 'PSDesiredStateConfiguration' -AllowPrerelease
 
-cd c:\tmp
 
-Configuration EnableIIS
-{
+# ConfigurationはPSDscResourcesしか使えない。PSDesiredStateConfigurationは使えない。
+# 現時点ではほとんどのものが使えないので注意。
+Configuration EnableIIS {
     param()
 
     Import-DscResource -ModuleName 'PSDscResources'
-    Import-DscResource -ModuleName 'PSDesiredStateConfiguration'
 
-
-    Node "localhost"
-    {
-        WindowsFeature WebServer {
-            Ensure = "Present"
-            Name   = "Web-Server"
+    Node "localhost" {
+        Script InstallWebServer {
+            GetScript = {
+                $featureState = Get-WindowsFeature -Name "Web-Server"
+                return @{
+                    Result = $featureState.InstallState -eq "Installed"
+                }
+            }
+            TestScript = {
+                $featureState = Get-WindowsFeature -Name "Web-Server"
+                return $featureState.InstallState -eq "Installed"
+            }
+            SetScript = {
+                Install-WindowsFeature -Name "Web-Server"
+            }
         }
 
-        File WebsiteContent1 {
-            Ensure = 'Present'
-            SourcePath = '\\arc-iisdemo-wac\webcontents\index.htm'
-            DestinationPath = 'c:\inetpub\wwwroot\index.htm'
+        Script DeployWebsiteContent1 {
+            GetScript = {
+                $exists = Test-Path "c:\inetpub\wwwroot\index.htm"
+                $content = $null
+                if ($exists) {
+                    $content = Get-Content "c:\inetpub\wwwroot\index.htm" -Raw
+                }
+                return @{
+                    Result = $content
+                }
+            }
+            TestScript = {
+                Test-Path "c:\inetpub\wwwroot\index.htm"
+            }
+            SetScript = {
+                Copy-Item "\\arc-iisdemo-wac\webcontents\index.htm" "c:\inetpub\wwwroot\index.htm"
+            }
+            DependsOn = "[Script]InstallWebServer"
         }
 
-        File WebsiteContent2 {
-            Ensure = 'Present'
-            SourcePath = '\\arc-iisdemo-wac\webcontents\logo.png'
-            DestinationPath = 'c:\inetpub\wwwroot\logo.png'
+        Script DeployWebsiteContent2 {
+            GetScript = {
+                $exists = Test-Path "c:\inetpub\wwwroot\logo.png"
+                $content = $null
+                if ($exists) {
+                    $content = Get-Content "c:\inetpub\wwwroot\logo.png" -Raw
+                }
+                return @{
+                    Result = $content
+                }
+            }
+            TestScript = {
+                Test-Path "c:\inetpub\wwwroot\logo.png"
+            }
+            SetScript = {
+                Copy-Item "\\arc-iisdemo-wac\webcontents\logo.png" "c:\inetpub\wwwroot\logo.png"
+            }
+            DependsOn = "[Script]InstallWebServer"
         }
-
     }
 }
 
 EnableIIS
 
+# localhost.mofをリネームする
+Rename-Item -Path '.\EnableIIS\localhost.mof' -NewName 'EnableIIS.mof'
 
-# Create a guest configuration package for Azure Policy GCS
+
+# ゲスト構成パッケージを作成する
 New-GuestConfigurationPackage `
   -Name 'EnableIIS' `
-  -Configuration './EnableIIS/localhost.mof' `
+  -Configuration './EnableIIS/EnableIIS.mof' `
   -Type AuditAndSet  `
   -Force
+
+# 基本要件のテスト
+Get-GuestConfigurationPackageComplianceStatus -Path .\EnableIIS.zip
+
+# 構成適用テスト
+Start-GuestConfigurationPackageRemediation -Path .\EnableIIS.zip
